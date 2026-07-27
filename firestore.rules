@@ -1,0 +1,84 @@
+rules_version = '2';
+
+// Cloud Firestore Security Rules
+// Modelo de dados:
+// /users/{userId}                          → dados do usuário (isAdmin, createdAt)
+// /models/{modelId}                        → modelos custom criados pelo admin
+//   { modelId, name, description, iconColor, geminiModelId, systemPrompt, createdBy, createdAt, isActive }
+// /prompts/global                          → prompt global do sistema (apenas admin escreve)
+//   { text, updatedAt, updatedBy }
+// /conversas/{conversaId}                  → conversas de cada user
+// /conversas/{conversaId}/messages/{msgId} → mensagens de uma conversa
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Helper: usuário logado
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    // Helper: é admin
+    function isAdmin() {
+      return isSignedIn() &&
+        exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
+        get(/databases/$(database)/documents/users/$(request.auth.uid)).data.isAdmin == true;
+    }
+
+    // Helper: dono do recurso
+    function isOwner(userId) {
+      return isSignedIn() && request.auth.uid == userId;
+    }
+
+    // ============== USERS ==============
+    match /users/{userId} {
+      // Qualquer logado pode ler (pra checar isAdmin)
+      allow read: if isSignedIn();
+      // User pode criar o próprio doc no cadastro (mas não pode setar isAdmin=true)
+      allow create: if isOwner(userId) &&
+        (!('isAdmin' in request.resource.data) || request.resource.data.isAdmin == false);
+      // User pode atualizar o próprio doc, mas NÃO pode mudar isAdmin
+      allow update: if isOwner(userId) &&
+        request.resource.data.isAdmin == resource.data.isAdmin;
+      // Só admin pode deletar users
+      allow delete: if isAdmin();
+    }
+
+    // ============== MODELS ==============
+    match /models/{modelId} {
+      // Qualquer logado pode ler modelos ativos
+      allow read: if isSignedIn() &&
+        resource.data.isActive == true;
+      // Só admin pode criar/editar/deletar
+      allow write: if isAdmin();
+    }
+
+    // ============== GLOBAL PROMPT ==============
+    match /prompts/{promptId} {
+      // Qualquer logado pode ler (pra usar no chat)
+      allow read: if isSignedIn();
+      // Só admin pode escrever
+      allow write: if isAdmin();
+    }
+
+    // ============== CONVERSAS ==============
+    match /conversas/{conversaId} {
+      // Só o dono pode ler/criar/editar/deletar suas conversas
+      allow read, create, update, delete: if isOwner(resource.data.userId);
+
+      // ============== MENSAGENS ==============
+      match /messages/{msgId} {
+        // Validação: userId da conversa pai deve bater com o user logado
+        allow read, create: if isSignedIn() &&
+          get(/databases/$(database)/documents/conversas/$(conversaId)).data.userId == request.auth.uid;
+        // Mensagens não podem ser editadas (só criadas)
+        allow update, delete: if false;
+      }
+    }
+
+    // ============== DEFAULT: NEGAR TUDO ==============
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}
