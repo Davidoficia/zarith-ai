@@ -1,0 +1,36 @@
+rules_version = '2';
+
+// Cloud Storage Security Rules
+// Estrutura:
+// /anexos/{userId}/{conversaId}/{fileName}
+
+service firebase.storage {
+  match /b/{bucket}/o {
+
+    // Helper: usuário logado
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    // Helper: owner do path
+    function isOwner(userId) {
+      return isSignedIn() && request.auth.uid == userId;
+    }
+
+    // Limite de 10MB por arquivo
+    function isSmallEnough() {
+      return request.resource.size < 10 * 1024 * 1024;
+    }
+
+    // ============== ANEXOS ==============
+    match /anexos/{userId}/{conversaId}/{fileName} {
+      // Dono pode ler/escrever nos próprios anexos
+      allow read, write: if isOwner(userId) && isSmallEnough();
+    }
+
+    // ============== DEFAULT: NEGAR ==============
+    match /{allPaths=**} {
+      allow read, write: if false;
+    }
+  }
+}
